@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use argon2::password_hash::rand_core::RngCore;
 use argon_hash_password::{create_hash_and_salt, hash_and_verify, parse_saltstring};
 use chacha20poly1305::{
-    aead::{stream, OsRng},
+    aead::{Aead, OsRng},
     KeyInit, XChaCha20Poly1305,
 };
 use zeroize::Zeroize;
@@ -11,7 +11,7 @@ use zeroize::Zeroize;
 const HASH_START_INDEX: usize = 48;
 const HASH_STORED_SIZE: usize = 32;
 const SALT_SIZE: usize = 22;
-const NONCE_SIZE: usize = 19;
+const NONCE_SIZE: usize = 24;
 
 pub fn encrypt<R, W>(password: &str, r: &mut R, w: &mut W) -> io::Result<()>
 where
@@ -28,22 +28,15 @@ where
     salt.copy_from_slice(salta.as_bytes());
     hash.copy_from_slice(&hasha.as_bytes()[HASH_START_INDEX..][..HASH_STORED_SIZE]);
 
-    let aead = XChaCha20Poly1305::new(hash.as_ref().into());
-
-    let mut stream_encryptor = stream::EncryptorBE32::from_aead(aead, nonce.as_ref().into());
-
     w.write_all(&salt)?;
     w.write_all(&nonce)?;
 
-    let mut buf = [0u8; 1024];
-    loop {
-        let n = r.read(&mut buf)?;
-        let v = stream_encryptor.encrypt_next(&buf[..n]).unwrap();
-        w.write_all(&v)?;
-        if n < buf.len() {
-            break;
-        }
-    }
+    let aead = XChaCha20Poly1305::new(hash.as_ref().into());
+
+    let mut buf = Vec::new();
+    r.read_to_end(&mut buf)?;
+    let v = aead.encrypt(nonce.as_ref().into(), &buf[..]).unwrap();
+    w.write_all(&v)?;
 
     hash.zeroize();
     buf.zeroize();
@@ -70,23 +63,15 @@ where
     );
 
     let aead = XChaCha20Poly1305::new(hash.as_ref().into());
-    let mut stream_decryptor = stream::DecryptorBE32::from_aead(aead, nonce.as_ref().into());
-
-    let mut buf = [0u8; 1024];
-    loop {
-        let n = r.read(&mut buf)?;
-        let v = match stream_decryptor.decrypt_next(&buf[..n]) {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!("Incorrect password.");
-                std::process::exit(1)
-            }
-        };
-        w.write_all(&v)?;
-        if n < buf.len() {
-            break;
+    let mut buf = Vec::new();
+    r.read_to_end(&mut buf)?;
+    match aead.decrypt(nonce.as_ref().into(), &buf[..]) {
+        Ok(v) => w.write_all(&v)?,
+        Err(e) => {
+            eprintln!("Incorrect password.");
+            std::process::exit(1)
         }
-    }
+    };
 
     hash.zeroize();
     buf.zeroize();

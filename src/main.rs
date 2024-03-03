@@ -30,7 +30,6 @@ fn main() -> io::Result<()> {
     ));
 
     // <Decrypt file>
-
     let mut tmpfile = File::create(&tmp)?;
     if inpath.exists() {
         // Decrypt the infile if it exists
